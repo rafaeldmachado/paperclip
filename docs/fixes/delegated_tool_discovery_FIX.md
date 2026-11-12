@@ -1,7 +1,7 @@
 # Delegated connection tool discovery
 
 - Status: Done (scoped fix; existing baseline CI failure recorded below)
-- Last Update: 2026-11-12T02:09:57Z
+- Last Update: 2026-11-12T11:16:28Z
 - Related: [upstream #20304](https://github.com/paperclipai/paperclip/issues/20304), [#17340](https://github.com/paperclipai/paperclip/pull/17340), [#17827](https://github.com/paperclipai/paperclip/pull/17827); `server/src/services/chat-github-tools.ts`, `server/src/services/chat-github-tools.test.ts`, `Dockerfile.delegated-tools`.
 - Delivery: [fork PR #1](https://github.com/rafaeldmachado/paperclip/pull/1), [complete CI partitions](https://github.com/rafaeldmachado/paperclip/actions/runs/43135689195), [controlled follow-ups](https://github.com/rafaeldmachado/paperclip/actions/runs/43137646546).
 
@@ -55,7 +55,7 @@ Verified:
 - Final GitHub, gateway and grant security checks, including the legacy hardening: 488/488 tests across 15 suites pass without skips. The malformed-legacy check also passes against the original stable source, confirming that the hardening preserves its denial behavior.
 - Server typecheck and build pass. Full workspace `pnpm -r typecheck` and `pnpm build` pass.
 - The runtime change is merged upstream #17340 plus one explicit optional-argument condition that preserves strict source matching for malformed legacy input.
-- The derived image builds. Its saved-production-context probe runs in a read-only transaction: the formerly failing child returns null and the parent still returns null. Production is not restarted.
+- The derived image builds. Its saved-production-context probe runs in a read-only transaction: the formerly failing child returns null and the parent still returns null. That pre-rollout probe did not restart production.
 - `bash scripts/verify-delegated-tools-image.sh IMAGE` boots the actual production bundle against a disposable PostgreSQL container. The official image fails HTTP discovery with the exact cross-task 403. The patched image returns 200 with the assigned tool, hides it after policy revocation and rejects a revoked call with 403. No provider operation is sent; no production volume or database is used by this image smoke test. Probe containers, volumes and network are removed on exit.
 - The serial `pnpm test:run` attempt was stopped without a complete result after roughly 45 minutes. The checked-in timing manifest records 93.7 serial minutes for 873 older server suites alone. The manual fork-only workflow then exercised the existing complete server/chat/workspace/serialized partitions against production-code commit `2c93948cb198ae24096e284b14ad5c07c77e19dd`.
 - Full CI recorded 42,034 passing tests and one failed assertion; raw skip counts also include intentional line/shard filters and platform/provider exclusions. Twenty-two jobs succeeded, including the matrix generator. Two jobs failed: the assertion below and a cold Cargo build exceeding the Dot Runner test hook's five-minute deadline.
@@ -74,7 +74,7 @@ Build with `docker build -f Dockerfile.delegated-tools --build-arg KELP_HOTFIX_C
 
 After deployment, retry the blocked child in a fresh runtime session and confirm that GitHub repository reads and GBrain search are actually present and callable. Do not create another connection or repeat existing approvals. A saved failed session may retain its failed MCP initialization.
 
-Production has not been changed or restarted. The server has a tested local image `kelp/paperclip:2026.1106.0-kelp.2`, image ID `sha256:dd8f15596e20361c3a9a0212d5393d2ef36c4f689f18121c01fe42df4c866e10`, labelled with the tested production-code commit. Deployment still requires a persistent pi-server configuration change so its normal deploy workflow cannot restore the original image on the next deployment.
+Production was deployed after explicit user approval. [pi-server PR #54](https://github.com/rafaeldmachado/pi-server/pull/54) pins the merged fork revision `c3e43435cc3831195620820bf8603a8ddbbd3450`; [PR #55](https://github.com/rafaeldmachado/pi-server/pull/55) records validation and the noninteractive rollout safeguard. The healthy application runs `kelp/paperclip:2026.1106.0-c3e43435cc3831195620820bf8603a8ddbbd3450`. PostgreSQL, data volumes and secrets were retained. The deployed gateway returned HTTP 200 under a rollback-only delegated context and exposed the assigned 46 GitHub and 85 GBrain tools, including file reads and search. The probe made no provider requests and woke no agents; a fresh real agent session remains the user retry step. A repeat deployment kept the same application container. Normal deployment now rebuilds the pinned fix rather than reverting to the official image.
 
 ## Quality checklist
 
