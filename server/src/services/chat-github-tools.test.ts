@@ -151,4 +151,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(after.body.result.tools.some((tool: { name: string }) => tool.name === read.name)).toBe(false);
   });
 
+
+  it("does not borrow a guest sponsor for an empty legacy source", async () => {
+    const f = await fixture();
+    await guestSource(f, true);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.second.id,
+      issueId: f.issue.id, status: "running", responsibleUserId: "requester", contextSnapshot: { wakeCommentId: "" } }).returning();
+    await expect(githubGuestBotConnectionForSession(db, { companyId: f.company.id, agentId: f.second.id,
+      issueId: f.issue.id, runId: run.id })).rejects.toThrow();
+  });
 });

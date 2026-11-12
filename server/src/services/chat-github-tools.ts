@@ -403,7 +403,7 @@ export async function githubGuestBotConnectionForSession(
     .where(
       and(
         eq(chatMessageLinks.companyId, session.companyId),
-        ...(commentId ? [eq(chatMessageLinks.commentId, commentId)] : []),
+        ...(commentId !== undefined ? [eq(chatMessageLinks.commentId, commentId)] : []),
         eq(chatConversations.issueId, session.issueId!),
         eq(chatEndpoints.assignedAgentId, session.agentId!),
         eq(chatEndpoints.provider, "github"),

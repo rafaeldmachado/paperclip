@@ -1,0 +1,74 @@
+name: Kelp hotfix tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kelp-hotfix-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      tests: ${{ steps.matrix.outputs.tests }}
+    steps:
+      - id: matrix
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          const include = [];
+          const add = (mode, group, count) => {
+            for (let index = 0; index < count; index++) include.push({ mode, group, index, count });
+          };
+          // Use the stable release's existing partitions. With a workflow name
+          // other than PR, the server lane also includes native Runner suites.
+          add('general', 'general-server-without-chat', 12);
+          add('general', 'general-chat', 3);
+          add('general', 'general-workspaces-a', 2);
+          add('general', 'general-workspaces-b', 1);
+          add('general', 'general-workspaces-c', 1);
+          add('serialized', '', 4);
+          appendFileSync(process.env.GITHUB_OUTPUT, `tests=${JSON.stringify({ include })}\n`);
+          JS
+
+  tests:
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    name: ${{ matrix.mode }} ${{ matrix.group }} ${{ matrix.index }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.matrix.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run preflight:workspace-links
+      - run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+      - name: Run existing stable test partition
+        env:
+          TEST_MODE: ${{ matrix.mode }}
+          TEST_GROUP: ${{ matrix.group }}
+          TEST_INDEX: ${{ matrix.index }}
+          TEST_COUNT: ${{ matrix.count }}
+        run: |
+          task_args=(--mode "$TEST_MODE")
+          if [ -n "$TEST_GROUP" ]; then task_args+=(--group "$TEST_GROUP"); fi
+          if [ "$TEST_COUNT" -gt 1 ]; then
+            task_args+=(--shard-index "$TEST_INDEX" --shard-count "$TEST_COUNT")
+          fi
+          node scripts/run-vitest-stable.mjs "${task_args[@]}"
