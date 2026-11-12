@@ -1,0 +1,21 @@
+# Backport one service onto the exact deployed release. No dependency upgrades.
+FROM ghcr.io/paperclipai/paperclip:2026.1106.0@sha256:d6584f05cf57a4b26c117eb083725f18c1fe69ddafa7d16c9f8cce83f6fa17da
+
+ARG KELP_HOTFIX_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/rafaeldmachado/paperclip" \
+      com.kelp.paperclip.hotfix="delegated-tool-discovery" \
+      com.kelp.paperclip.hotfix.commit="${KELP_HOTFIX_COMMIT}"
+
+WORKDIR /app
+COPY --chown=node:node server/src/services/chat-github-tools.ts /app/server/src/services/chat-github-tools.ts
+RUN node --input-type=module <<'JS'
+import { transformSync } from "esbuild";
+import { readFileSync, writeFileSync } from "node:fs";
+const source = "/app/server/src/services/chat-github-tools.ts";
+const result = transformSync(readFileSync(source, "utf8"), {
+  sourcefile: source, loader: "ts", format: "esm", target: "node24",
+});
+writeFileSync("/app/server/dist/services/chat-github-tools.js", result.code);
+JS
+# Production starts dist-runtime/index.mjs; updating dist alone has no effect.
+RUN node server/scripts/bundle-runtime.mjs
