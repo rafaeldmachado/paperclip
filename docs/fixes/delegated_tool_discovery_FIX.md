@@ -1,8 +1,9 @@
 # Delegated connection tool discovery
 
-- Status: In progress
-- Last Update: 2026-11-12T01:20:26Z
+- Status: Done (scoped fix; existing baseline CI failure recorded below)
+- Last Update: 2026-11-12T02:09:57Z
 - Related: [upstream #20304](https://github.com/paperclipai/paperclip/issues/20304), [#17340](https://github.com/paperclipai/paperclip/pull/17340), [#17827](https://github.com/paperclipai/paperclip/pull/17827); `server/src/services/chat-github-tools.ts`, `server/src/services/chat-github-tools.test.ts`, `Dockerfile.delegated-tools`.
+- Delivery: [fork PR #1](https://github.com/rafaeldmachado/paperclip/pull/1), [complete CI partitions](https://github.com/rafaeldmachado/paperclip/actions/runs/43135689195), [controlled follow-ups](https://github.com/rafaeldmachado/paperclip/actions/runs/43137646546).
 
 ## User Problem
 
@@ -51,12 +52,15 @@ The optional derived Docker image starts from the exact official digest, compile
 Verified:
 
 - Targeted delegation, strict provenance, HTTP discovery and grant resolution: 32/32 tests pass, no skips.
-- Broader GitHub, gateway and grant security checks: 487/487 tests across 15 suites pass.
+- Final GitHub, gateway and grant security checks, including the legacy hardening: 488/488 tests across 15 suites pass without skips. The malformed-legacy check also passes against the original stable source, confirming that the hardening preserves its denial behavior.
 - Server typecheck and build pass. Full workspace `pnpm -r typecheck` and `pnpm build` pass.
 - The runtime change is merged upstream #17340 plus one explicit optional-argument condition that preserves strict source matching for malformed legacy input.
 - The derived image builds. Its saved-production-context probe runs in a read-only transaction: the formerly failing child returns null and the parent still returns null. Production is not restarted.
 - `bash scripts/verify-delegated-tools-image.sh IMAGE` boots the actual production bundle against a disposable PostgreSQL container. The official image fails HTTP discovery with the exact cross-task 403. The patched image returns 200 with the assigned tool, hides it after policy revocation and rejects a revoked call with 403. No provider operation is sent; no production volume or database is used by this image smoke test. Probe containers, volumes and network are removed on exit.
-- The serial `pnpm test:run` attempt was stopped without a complete result after roughly 45 minutes. The checked-in timing manifest records 93.7 serial minutes for 873 older server suites alone. A manual fork-only workflow now runs the existing CI partitions on the final tree; do not describe the complete repository suite as passed until those results are recorded.
+- The serial `pnpm test:run` attempt was stopped without a complete result after roughly 45 minutes. The checked-in timing manifest records 93.7 serial minutes for 873 older server suites alone. The manual fork-only workflow then exercised the existing complete server/chat/workspace/serialized partitions against production-code commit `2c93948cb198ae24096e284b14ad5c07c77e19dd`.
+- Full CI recorded 42,034 passing tests and one failed assertion; raw skip counts also include intentional line/shard filters and platform/provider exclusions. Twenty-two jobs succeeded, including the matrix generator. Two jobs failed: the assertion below and a cold Cargo build exceeding the Dot Runner test hook's five-minute deadline.
+- The controlled Rust follow-up prebuilt the same binary outside the hook. All 54 Dot Runner integration tests then passed. The follow-up workflow succeeded; this resolves the build-deadline failure without changing product code or test assertions.
+- The remaining assertion in unchanged `server/src/services/native-runtime/runner-bridge-tools.test.ts:159` expects shell permission-denial exit code 1; Ubuntu's shell returns 2. The same unmodified assertion fails identically with the original stable runtime service and the patched one. Comparison logs are attached to the follow-up run. It is an existing baseline issue, deliberately left outside this one-service hotfix. **The complete repository suite is not claimed fully green.**
 
 Initial verification failures, retained separately from the product fix:
 
@@ -64,11 +68,13 @@ Initial verification failures, retained separately from the product fix:
 - The initial image recipe used a legacy TypeScript API absent in this release. The final recipe uses the image's existing esbuild transformer; the resulting runtime bundle was then exercised over HTTP.
 - The first isolated server probe used local-trusted mode with a non-loopback bind. The probe now binds loopback explicitly. A later probe assumed the exposed tool name ended with the provider name; gateway names can be truncated and hashed. The final probe resolves the expected catalog entry by ID and checks that its exposed name appears in the HTTP response. Neither correction changed runtime source; the final unchanged-image comparison still fails with the original 403.
 
-The branch is based on the deployed stable commit, not current upstream master. A future official release containing #17340 can replace the derived image and retire this entire backport. Roll back by restoring the original immutable image digest; there are no data changes to reverse. Keep actual guest chains fail-closed; broader guest-task delegation remains outside this hotfix.
+The branch is based on the deployed stable commit, not current upstream master. Before replacing the derived image with a future official release, run the delegation and malformed-legacy regressions plus the image verifier against it. Retire the backport once that release passes them; retain the one-condition legacy hardening if upstream still omits it. Roll back by restoring the original immutable image digest; there are no data changes to reverse. Keep actual guest chains fail-closed; broader guest-task delegation remains outside this hotfix.
 
 Build with `docker build -f Dockerfile.delegated-tools --build-arg KELP_HOTFIX_COMMIT=$(git rev-parse HEAD) -t kelp/paperclip:delegated-tools .`; run the isolated image verifier before choosing a production image. The fork's inherited workflows stay disabled; only the new manual read-only verifier is enabled, with no release or deployment permissions.
 
 After deployment, retry the blocked child in a fresh runtime session and confirm that GitHub repository reads and GBrain search are actually present and callable. Do not create another connection or repeat existing approvals. A saved failed session may retain its failed MCP initialization.
+
+Production has not been changed or restarted. The server has a tested local image `kelp/paperclip:2026.1106.0-kelp.2`, image ID `sha256:dd8f15596e20361c3a9a0212d5393d2ef36c4f689f18121c01fe42df4c866e10`, labelled with the tested production-code commit. Deployment still requires a persistent pi-server configuration change so its normal deploy workflow cannot restore the original image on the next deployment.
 
 ## Quality checklist
 
@@ -77,6 +83,7 @@ After deployment, retry the blocked child in a fresh runtime session and confirm
 - [x] Reproduced failure before changing source.
 - [x] Targeted tests pass without skipped database tests.
 - [x] Typecheck and build pass.
-- [ ] Full repository verification recorded, including limits.
+- [x] Full repository verification recorded, including original failures and controlled comparisons.
+- [ ] All repository tests pass: one unchanged Linux sandbox assertion remains a confirmed baseline failure.
 - [x] Derived image and saved-run read-only probe checked.
 - [x] User retry guidance provided.

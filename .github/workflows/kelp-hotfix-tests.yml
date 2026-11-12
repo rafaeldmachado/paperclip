@@ -67,9 +67,17 @@ jobs:
       - run: pnpm run preflight:workspace-links
       - run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
       - name: Prebuild Rust outside the Dot Runner test hook
-        if: matrix.group == 'general-server-without-chat' && matrix.index == 6
-        working-directory: packages/paperclip-runner
-        run: cargo build --release --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd
+        if: matrix.group == 'general-server-without-chat'
+        env:
+          TEST_INDEX: ${{ matrix.index }}
+          TEST_COUNT: ${{ matrix.count }}
+        run: |
+          task_plan="$RUNNER_TEMP/kelp-shard-plan.json"
+          node scripts/run-vitest-stable.mjs --mode general --group general-server-without-chat \
+            --shard-index "$TEST_INDEX" --shard-count "$TEST_COUNT" --dry-run > "$task_plan"
+          if node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(p.selectedGeneralServerSuites.some(f=>f.endsWith("/dot-runner.test.ts"))?0:1)' "$task_plan"; then
+            (cd packages/paperclip-runner && cargo build --release --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd)
+          fi
       - name: Run existing stable test partition
         env:
           TEST_MODE: ${{ matrix.mode }}
