@@ -1,0 +1,157 @@
+name: Kelp hotfix tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        type: choice
+        options: [full, follow-up]
+        default: full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kelp-hotfix-tests-${{ github.ref }}-${{ inputs.scope || 'full' }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    if: inputs.scope != 'follow-up'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      tests: ${{ steps.matrix.outputs.tests }}
+    steps:
+      - id: matrix
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          const include = [];
+          const add = (mode, group, count) => {
+            for (let index = 0; index < count; index++) include.push({ mode, group, index, count });
+          };
+          // Use the stable release's existing partitions. With a workflow name
+          // other than PR, the server lane also includes native Runner suites.
+          add('general', 'general-server-without-chat', 12);
+          add('general', 'general-chat', 3);
+          add('general', 'general-workspaces-a', 2);
+          add('general', 'general-workspaces-b', 1);
+          add('general', 'general-workspaces-c', 1);
+          add('serialized', '', 4);
+          appendFileSync(process.env.GITHUB_OUTPUT, `tests=${JSON.stringify({ include })}\n`);
+          JS
+
+  tests:
+    if: inputs.scope != 'follow-up'
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    name: ${{ matrix.mode }} ${{ matrix.group }} ${{ matrix.index }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.matrix.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run preflight:workspace-links
+      - run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+      - name: Prebuild Rust outside the Dot Runner test hook
+        if: matrix.group == 'general-server-without-chat'
+        env:
+          TEST_INDEX: ${{ matrix.index }}
+          TEST_COUNT: ${{ matrix.count }}
+        run: |
+          task_plan="$RUNNER_TEMP/kelp-shard-plan.json"
+          node scripts/run-vitest-stable.mjs --mode general --group general-server-without-chat \
+            --shard-index "$TEST_INDEX" --shard-count "$TEST_COUNT" --dry-run > "$task_plan"
+          if node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(p.selectedGeneralServerSuites.some(f=>f.endsWith("/dot-runner.test.ts"))?0:1)' "$task_plan"; then
+            (cd packages/paperclip-runner && cargo build --release --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd)
+          fi
+      - name: Run existing stable test partition
+        env:
+          TEST_MODE: ${{ matrix.mode }}
+          TEST_GROUP: ${{ matrix.group }}
+          TEST_INDEX: ${{ matrix.index }}
+          TEST_COUNT: ${{ matrix.count }}
+        run: |
+          task_args=(--mode "$TEST_MODE")
+          if [ -n "$TEST_GROUP" ]; then task_args+=(--group "$TEST_GROUP"); fi
+          if [ "$TEST_COUNT" -gt 1 ]; then
+            task_args+=(--shard-index "$TEST_INDEX" --shard-count "$TEST_COUNT")
+          fi
+          node scripts/run-vitest-stable.mjs "${task_args[@]}"
+
+  follow-up:
+    if: inputs.scope == 'follow-up'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [bridge-baseline, dot-runner-warm]
+    name: Follow-up ${{ matrix.check }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run preflight:workspace-links
+      - run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+      - name: Compare the unmodified sandbox assertion with the stable runtime
+        if: matrix.check == 'bridge-baseline'
+        run: |
+          git fetch --depth=1 origin d69631b01b9c658f80bf8bed389863dce82643e1
+          python3 <<'PY'
+          from pathlib import Path
+          import json, re, subprocess
+          service = Path('server/src/services/chat-github-tools.ts')
+          patched = service.read_bytes()
+          baseline = subprocess.check_output(['git', 'show', 'd69631b01b9c658f80bf8bed389863dce82643e1:server/src/services/chat-github-tools.ts'])
+          command = ['pnpm', '--filter', '@paperclipai/server', 'exec', 'vitest', 'run',
+                     'src/services/native-runtime/runner-bridge-tools.test.ts', '-t',
+                     'runs useful commands but denies files outside the workspace and injected credentials']
+          results = {}
+          try:
+              for name, source in [('patched', patched), ('baseline', baseline)]:
+                  service.write_bytes(source)
+                  result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  Path('/tmp/paperclip-bridge-' + name + '.log').write_text(result.stdout)
+                  log = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout)
+                  results[name] = {'exit': result.returncode,
+                      'same_exit_code_assertion': 'exitCode: 2' in log and 'runner-bridge-tools.test.ts' in log}
+          finally:
+              service.write_bytes(patched)
+          print(json.dumps(results))
+          assert all(result['exit'] == 1 and result['same_exit_code_assertion'] for result in results.values()), results
+          PY
+      - name: Build the native binary without the test hook deadline
+        if: matrix.check == 'dot-runner-warm'
+        working-directory: packages/paperclip-runner
+        run: cargo build --release --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd
+      - name: Run Dot Runner integration with the prebuilt binary
+        if: matrix.check == 'dot-runner-warm'
+        run: pnpm --filter @paperclipai/server exec vitest run src/__tests__/dot-runner.test.ts
+      - name: Preserve baseline comparison logs
+        if: always() && matrix.check == 'bridge-baseline'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sandbox-baseline-comparison
+          path: /tmp/paperclip-bridge-*.log
